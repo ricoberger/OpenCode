@@ -2,7 +2,7 @@
 //  ComposerView.swift
 //  OpenCode
 //
-//  Prompt input with model/agent pickers, send, and stop.
+//  Prompt input with send and stop.
 //
 //  Behavior decisions baked in here:
 //  - The draft is only cleared after the server accepts the prompt, so a
@@ -11,7 +11,7 @@
 //    prompt. The stop button appears *next to* send while working.
 //  - Return inserts a newline (mobile chat convention); sending is always
 //    explicit via the send button.
-//  - Model/agent selection is app-wide and persisted (see SessionStore).
+//  - Model/agent selection lives in the chat settings menu (see ChatView).
 //
 
 import SwiftUI
@@ -25,6 +25,9 @@ struct ComposerView: View {
     @State private var draft = ""
     /// True while a prompt request is in flight; debounces the send button.
     @State private var sending = false
+    /// Tracked so the Return-key handler can keep the field focused (the
+    /// text system tries to end editing on hardware Return).
+    @FocusState private var isFocused: Bool
 
     private var isWorking: Bool {
         store.status(for: session.id).isWorking
@@ -40,120 +43,70 @@ struct ComposerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Picker row above the text field — compact chips, not pickers,
-            // to keep the composer low.
-            HStack(spacing: 8) {
-                modelMenu
-                agentMenu
-                Spacer()
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField(
+                isConnected ? "Message" : "Disconnected",
+                text: $draft,
+                axis: .vertical
+            )
+            // Grows with content up to 6 lines, then scrolls internally.
+            .lineLimit(1...6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 18))
+            // Typing while disconnected would silently go nowhere —
+            // disable and let the placeholder explain why.
+            .disabled(!isConnected)
+            .focused($isFocused)
+            // The software keyboard's return key inserts a newline in a
+            // vertical-axis TextField, but *hardware* keyboards
+            // (Simulator with the Mac keyboard, iPad keyboards) deliver
+            // Return as a key event that would otherwise do nothing.
+            // Intercept it so both keyboards behave the same.
+            // Limitation: SwiftUI exposes no cursor position for
+            // TextField, so the newline is appended at the end — fine
+            // for linear chat typing.
+            .onKeyPress(.return) {
+                draft += "\n"
+                // The text system still tries to end editing on hardware
+                // Return despite us handling the event; re-assert focus
+                // on the next runloop so the caret stays in the field.
+                Task { isFocused = true }
+                return .handled
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(
-                    isConnected ? "Message" : "Disconnected",
-                    text: $draft,
-                    axis: .vertical
-                )
-                // Grows with content up to 6 lines, then scrolls internally.
-                .lineLimit(1...6)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 18))
-                // Typing while disconnected would silently go nowhere —
-                // disable and let the placeholder explain why.
-                .disabled(!isConnected)
-
-                // Stop appears only while the agent works; send stays
-                // available so the user can queue a follow-up.
-                if isWorking {
-                    Button {
-                        Task { await store.abort(sessionID: session.id) }
-                    } label: {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.red)
-                    }
-                    .accessibilityLabel("Stop")
-                }
-
+            // Stop appears only while the agent works; send stays
+            // available so the user can queue a follow-up.
+            if isWorking {
                 Button {
-                    send()
+                    Task { await store.abort(sessionID: session.id) }
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
+                    Image(systemName: "stop.circle.fill")
                         .font(.title2)
+                        .foregroundStyle(.red)
+                        // Optically centers the icon against a
+                        // single-line field (whose text sits inside 8pt
+                        // vertical padding); with .bottom alignment the
+                        // button stays pinned as the field grows.
+                        .padding(.bottom, 6)
                 }
-                .disabled(!canSend)
-                .accessibilityLabel("Send")
+                .accessibilityLabel("Stop")
             }
+
+            Button {
+                send()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+                    // Same optical centering as the stop button.
+                    .padding(.bottom, 6)
+            }
+            .disabled(!canSend)
+            .accessibilityLabel("Send")
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
-    }
-
-    // MARK: - Pickers
-
-    /// Model picker: flat menu of every model across providers, with a
-    /// checkmark on the current selection.
-    private var modelMenu: some View {
-        Menu {
-            ForEach(store.availableModels, id: \.ref) { model in
-                Button {
-                    store.selectedModel = model.ref
-                } label: {
-                    if store.selectedModel == model.ref {
-                        Label(model.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(model.displayName)
-                    }
-                }
-            }
-        } label: {
-            chip(selectedModelName, systemImage: "cpu")
-        }
-        // Empty until the first successful providers fetch.
-        .disabled(store.availableModels.isEmpty)
-    }
-
-    /// Agent picker: primary agents only (the store filters subagents).
-    private var agentMenu: some View {
-        Menu {
-            ForEach(store.selectableAgents) { agent in
-                Button {
-                    store.selectedAgent = agent.name
-                } label: {
-                    if store.selectedAgent == agent.name {
-                        Label(agent.name, systemImage: "checkmark")
-                    } else {
-                        Text(agent.name)
-                    }
-                }
-            }
-        } label: {
-            chip(store.selectedAgent ?? "agent", systemImage: "person.text.rectangle")
-        }
-        .disabled(store.selectableAgents.isEmpty)
-    }
-
-    /// Display name of the selected model. Falls back to the raw model ID
-    /// when the model vanished from the server (still shown, still usable —
-    /// the server decides whether it accepts it).
-    private var selectedModelName: String {
-        guard let selected = store.selectedModel else { return "model" }
-        return store.availableModels.first { $0.ref == selected }?.displayName
-            ?? selected.modelID
-    }
-
-    /// Shared chip styling for the two picker labels.
-    private func chip(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.caption)
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(.fill.quaternary, in: Capsule())
-            .foregroundStyle(.secondary)
     }
 
     // MARK: - Actions

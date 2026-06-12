@@ -28,6 +28,14 @@ struct ContentView: View {
         } detail: {
             if let session = selectedSession {
                 ChatView(session: session)
+                    // Key the chat's *identity* to the session: switching
+                    // sessions must rebuild the subtree (fresh load task,
+                    // scroll position, composer draft, expansion states).
+                    // Without this, SwiftUI reuses the same ChatView and
+                    // state from the previous session leaks into the next.
+                    // Title/timestamp updates keep the id stable, so live
+                    // session updates do not recreate the view.
+                    .id(session.id)
             } else {
                 ContentUnavailableView(
                     "No Session Selected",
@@ -54,6 +62,20 @@ struct ContentView: View {
                 connection.disconnect()
             default:
                 break
+            }
+        }
+        // Message loading is driven by the *selection*, not by ChatView's
+        // lifecycle: on iPhone, NavigationSplitView fires a spurious
+        // disappear/appear on the detail during the push transition, which
+        // cancels a `.task` mid-request without ever restarting it (the
+        // view identity never changed). Selection changes have no such
+        // quirks. The unstructured Task is deliberate — it must survive
+        // view transitions; concurrent loads are safe because results are
+        // written keyed by session ID.
+        .onChange(of: selectedSessionID) { _, newID in
+            store.activeSessionID = newID
+            if let newID {
+                Task { await store.loadMessages(sessionID: newID) }
             }
         }
     }

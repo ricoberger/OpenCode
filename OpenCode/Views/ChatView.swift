@@ -2,8 +2,10 @@
 //  ChatView.swift
 //  OpenCode
 //
-//  The conversation: streamed messages, pending permission cards, and the
-//  composer. Messages load on appear and re-sync via the session store.
+//  The conversation: streamed messages, pending permission cards, the
+//  composer, and the chat settings menu (model/agent selection) in the
+//  toolbar. Message loading is selection-driven (see ContentView); this
+//  view only renders store state and re-syncs live via SSE events.
 //
 //  Rendering is driven entirely by the store — this view holds no message
 //  state of its own. Streaming updates (parts growing token by token)
@@ -40,10 +42,14 @@ struct ChatView: View {
         .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            // Subtle "agent is working" indicator in the chat header.
-            if store.status(for: session.id).isWorking {
-                ToolbarItem(placement: .topBarTrailing) {
+            // One trailing slot, two occupants: while the agent works it
+            // shows the spinner, otherwise the chat settings menu (model
+            // and agent selection for new prompts).
+            ToolbarItem(placement: .topBarTrailing) {
+                if store.status(for: session.id).isWorking {
                     ProgressView()
+                } else {
+                    chatSettingsMenu
                 }
             }
         }
@@ -52,20 +58,38 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom) {
             ComposerView(session: session)
         }
-        // Keyed by session ID: switching sessions cancels the old load and
-        // starts a fresh one. Also registers this session as "active" so
-        // refreshAll() reloads its messages after reconnects.
-        .task(id: session.id) {
-            store.activeSessionID = session.id
-            await store.loadMessages(sessionID: session.id)
-        }
-        .onDisappear {
-            // Only clear if we are still the active session — on iPhone a
-            // push/pop can interleave appear/disappear between two chats.
-            if store.activeSessionID == session.id {
-                store.activeSessionID = nil
+        // Note: message loading is intentionally NOT triggered here.
+        // ContentView drives it from the sidebar selection — a `.task` on
+        // this view gets cancelled (and never restarted) by the spurious
+        // disappear/appear cycle NavigationSplitView produces during push
+        // transitions on iPhone.
+    }
+
+    /// Per-chat settings: model and agent used for new prompts. Selection
+    /// is app-wide and persisted (see SessionStore); the pickers render as
+    /// submenus showing the current choice.
+    private var chatSettingsMenu: some View {
+        @Bindable var store = store
+        return Menu {
+            Picker("Model", selection: $store.selectedModel) {
+                ForEach(store.availableModels, id: \.ref) { model in
+                    Text(model.displayName).tag(model.ref as ModelRef?)
+                }
             }
+            .pickerStyle(.menu)
+
+            Picker("Agent", selection: $store.selectedAgent) {
+                ForEach(store.selectableAgents) { agent in
+                    Text(agent.name).tag(agent.name as String?)
+                }
+            }
+            .pickerStyle(.menu)
+        } label: {
+            Label("Chat Settings", systemImage: "gearshape")
         }
+        // Both lists are empty until the first successful providers/agents
+        // fetch — nothing to pick yet.
+        .disabled(store.availableModels.isEmpty && store.selectableAgents.isEmpty)
     }
 }
 
@@ -85,15 +109,22 @@ struct PermissionCard: View {
                 .font(.subheadline.bold())
                 .foregroundStyle(.orange)
 
-            if !permission.title.isEmpty {
-                Text(permission.title)
-                    .font(.callout)
+            // Title when the server sends one, else the permission category
+            // (e.g. "external_directory").
+            Text(permission.displayTitle)
+                .font(.callout)
+
+            // What exactly the agent wants to touch (file path, command…).
+            if let detail = permission.detail {
+                Text(detail)
+                    .font(.caption.monospaced())
+                    .lineLimit(3)
             }
 
             // The pattern(s) an "Always Allow" would whitelist — the user
             // should see the scope before granting it permanently.
             if !permission.patterns.isEmpty {
-                Text(permission.patterns.joined(separator: ", "))
+                Text("Always allows: " + permission.patterns.joined(separator: ", "))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(3)

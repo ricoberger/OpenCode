@@ -7,7 +7,7 @@
 //  | Part type        | Treatment                                   |
 //  |------------------|---------------------------------------------|
 //  | text             | markdown bubble (user: plain trailing)      |
-//  | reasoning        | collapsed "Thinking" disclosure             |
+//  | reasoning        | collapsed expandable card (tool-card style) |
 //  | tool             | compact expandable status card              |
 //  | file             | filename chip                               |
 //  | agent/subtask    | small informational chip                    |
@@ -175,26 +175,77 @@ private struct PartView: View {
 
 // MARK: - Reasoning
 
-/// Collapsed-by-default "Thinking" section. Plain text (not markdown):
-/// reasoning content is rough and high-volume, monospace markdown rendering
-/// would slow scrolling for little benefit.
+/// Reasoning rendered in the same card style as tool calls: a compact
+/// tappable header (spinner while the model is still thinking, sparkles
+/// once done, one-line preview) that expands to the full reasoning text.
 private struct ReasoningView: View {
     let data: ReasoningPartData
     @State private var expanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            Text(data.text)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-        } label: {
-            Label("Thinking", systemImage: "sparkles")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.snappy) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    statusIcon
+                        .frame(width: 16)
+
+                    Text("thinking")
+                        .font(.caption.monospaced().bold())
+
+                    // One-line preview of the reasoning, mirroring the
+                    // tool card's summary slot.
+                    Text(preview)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                // Make the whole row tappable, not just the visible glyphs.
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                Text(data.text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .padding(10)
+        .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Spinner while the model is still thinking (no end time yet),
+    /// sparkles once the reasoning is complete — same pattern as the tool
+    /// card's status icon.
+    @ViewBuilder
+    private var statusIcon: some View {
+        if data.timeEnd == nil {
+            ProgressView()
+                .controlSize(.mini)
+        } else {
+            Image(systemName: "sparkles")
+                .font(.caption)
+                .foregroundStyle(.tint)
+        }
+    }
+
+    private var preview: String {
+        data.text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .newlines)
+            .first ?? ""
     }
 }
 
