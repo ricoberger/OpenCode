@@ -180,6 +180,32 @@ struct SessionStoreTests {
         #expect(store.permissions(for: "ses_1").isEmpty)
     }
 
+    /// Same lifecycle but with the wire format real 1.16.2 servers emit:
+    /// "permission.asked" + "permission.replied" with requestID/reply.
+    @Test func permissionLifecycleWithRealServerShape() throws {
+        let store = makeStore()
+
+        store.apply(try event("""
+        {
+          "type": "permission.asked",
+          "properties": {
+            "id": "per_real", "sessionID": "ses_1",
+            "permission": "external_directory",
+            "patterns": ["/etc/*"],
+            "metadata": { "filepath": "/etc/hosts" },
+            "tool": { "messageID": "msg_1", "callID": "call_1" }
+          }
+        }
+        """))
+        #expect(store.permissions(for: "ses_1").count == 1)
+        #expect(store.permissions(for: "ses_1")[0].type == "external_directory")
+
+        store.apply(try event("""
+        { "type": "permission.replied", "properties": { "sessionID": "ses_1", "requestID": "per_real", "reply": "once" } }
+        """))
+        #expect(store.permissions(for: "ses_1").isEmpty)
+    }
+
     // MARK: - Status and errors
 
     @Test func statusEventsUpdateWorkingState() throws {

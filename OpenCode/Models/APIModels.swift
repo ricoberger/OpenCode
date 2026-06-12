@@ -593,36 +593,68 @@ struct MessageWithParts: Identifiable, Hashable, Decodable {
 /// A pending approval request: the agent wants to run a tool and is blocked
 /// until the user responds via
 /// `POST /session/:id/permissions/:permissionID`.
+///
+/// Wire format note: the published spec models this as `{ id, type,
+/// pattern, sessionID, messageID, callID, title, metadata, time }`, but
+/// real servers (observed on 1.16.2) emit `{ id, sessionID, permission,
+/// patterns, metadata, always, tool: { messageID, callID } }` — no title,
+/// different key names, ids nested under `tool`. The decoder accepts both.
 struct Permission: Identifiable, Hashable, Decodable {
     let id: String
-    /// Permission category (e.g. "bash", "edit", "webfetch").
+    /// Permission category (e.g. "bash", "edit", "external_directory").
     var type: String
     var sessionID: String
     var messageID: String?
     var callID: String?
-    /// Human-readable description of the requested action.
+    /// Human-readable description; empty on servers that do not send one
+    /// (use `displayTitle` for UI).
     var title: String
-    /// Tool-specific details (e.g. the exact command for bash).
+    /// Tool-specific details (e.g. the exact command for bash, the file
+    /// path for external_directory).
     var metadata: JSONValue?
     /// Glob-like patterns describing the scope of an "always allow" reply.
     var patterns: [String]
     var timeCreated: Double?
 
+    /// Headline for the UI: the server's title when present, otherwise the
+    /// permission category.
+    var displayTitle: String {
+        title.isEmpty ? type : title
+    }
+
+    /// The most relevant metadata detail to show the user before they
+    /// approve (the command, the file path, ...). Probes the keys the
+    /// built-in tools use.
+    var detail: String? {
+        for key in ["command", "filepath", "filePath", "path", "url", "description"] {
+            if let value = metadata?[key]?.stringValue, !value.isEmpty { return value }
+        }
+        return nil
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AnyCodingKey.self)
         self.id = try container.decode(String.self, forKey: AnyCodingKey("id"))
-        self.type = container.string("type") ?? ""
+        // Spec shape uses "type", real servers use "permission".
+        self.type = container.string("type") ?? container.string("permission") ?? ""
         self.sessionID = container.string("sessionID") ?? ""
-        self.messageID = container.string("messageID")
-        self.callID = container.string("callID")
+        // Spec shape has the ids at the top level, real servers nest them
+        // under "tool".
+        let tool = container.nested("tool")
+        self.messageID = container.string("messageID") ?? tool?.string("messageID")
+        self.callID = container.string("callID") ?? tool?.string("callID")
         self.title = container.string("title") ?? ""
         self.metadata = container.json("metadata")
-        // The server sends `pattern` as either a single string or an array;
-        // normalize both shapes to an array.
-        switch container.json("pattern") {
-        case .string(let value): self.patterns = [value]
-        case .array(let values): self.patterns = values.compactMap(\.stringValue)
-        default: self.patterns = []
+        // Real servers send "patterns" (array); the spec shape is
+        // "pattern" as either a single string or an array.
+        if let patterns = try? container.decodeIfPresent([String].self, forKey: AnyCodingKey("patterns")) {
+            self.patterns = patterns
+        } else {
+            switch container.json("pattern") {
+            case .string(let value): self.patterns = [value]
+            case .array(let values): self.patterns = values.compactMap(\.stringValue)
+            default: self.patterns = []
+            }
         }
         self.timeCreated = container.nested("time")?.double("created")
     }
@@ -916,18 +948,23 @@ enum ServerEvent: Decodable {
                 messageID: properties?.string("messageID") ?? "",
                 partID: properties?.string("partID") ?? ""
             )
-        case "permission.updated":
-            // Unlike other events, the permission *is* the properties object
-            // (not nested under a key).
+        case "permission.updated", "permission.asked":
+            // The spec documents "permission.updated"; real servers
+            // (observed on 1.16.2) emit "permission.asked". Either way the
+            // permission *is* the properties object (not nested under a
+            // key).
             if let permission = decodeProperties(Permission.self) {
                 self = .permissionUpdated(permission)
             } else {
                 self = .unknown(type: type)
             }
         case "permission.replied":
+            // Spec says { permissionID, response }; real servers send
+            // { requestID, reply }. Accept both.
             self = .permissionReplied(
                 sessionID: properties?.string("sessionID") ?? "",
-                permissionID: properties?.string("permissionID") ?? ""
+                permissionID: properties?.string("permissionID")
+                    ?? properties?.string("requestID") ?? ""
             )
         case "session.status":
             if let status = decodeProperties(SessionStatus.self, "status") {

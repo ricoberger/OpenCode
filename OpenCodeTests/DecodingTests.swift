@@ -291,12 +291,77 @@ struct DecodingTests {
         let permission = try decode(Permission.self, stringPattern)
         #expect(permission.patterns == ["rm *"])
         #expect(permission.title == "Run rm -rf build")
+        #expect(permission.displayTitle == "Run rm -rf build")
+        #expect(permission.detail == "rm -rf build")
 
         let arrayPattern = """
         { "id": "per_2", "type": "edit", "pattern": ["src/*", "tests/*"], "sessionID": "ses_1", "messageID": "m", "title": "Edit files", "metadata": {}, "time": { "created": 1 } }
         """
         let permission2 = try decode(Permission.self, arrayPattern)
         #expect(permission2.patterns == ["src/*", "tests/*"])
+    }
+
+    /// Verbatim `permission.asked` event captured from a real opencode
+    /// 1.16.2 server. The shape differs from the published spec: the event
+    /// name is "asked" (not "updated"), the category key is "permission"
+    /// (not "type"), patterns is an array under "patterns", there is no
+    /// title, and the message/call ids are nested under "tool".
+    @Test func decodesRealPermissionAskedEvent() throws {
+        let json = """
+        {
+          "id": "evt_ebcff79280026aloNjoSZbNqPI",
+          "type": "permission.asked",
+          "properties": {
+            "id": "per_ebcff7928001pLqki93NGCU7o4",
+            "sessionID": "ses_143009242ffe1xK9KurTky0PxE",
+            "permission": "external_directory",
+            "patterns": ["/etc/*"],
+            "metadata": { "filepath": "/etc/hosts", "parentDir": "/etc" },
+            "always": ["/etc/*"],
+            "tool": {
+              "messageID": "msg_ebcff7091001rZYPcu2nkBEQaN",
+              "callID": "toolu_vrtx_01RS7Ytg947wehEnb8WBDzcV"
+            }
+          }
+        }
+        """
+        let event = try decode(ServerEvent.self, json)
+        guard case .permissionUpdated(let permission) = event else {
+            Issue.record("expected permissionUpdated")
+            return
+        }
+        #expect(permission.id == "per_ebcff7928001pLqki93NGCU7o4")
+        #expect(permission.sessionID == "ses_143009242ffe1xK9KurTky0PxE")
+        #expect(permission.type == "external_directory")
+        #expect(permission.displayTitle == "external_directory")
+        #expect(permission.patterns == ["/etc/*"])
+        #expect(permission.detail == "/etc/hosts")
+        #expect(permission.messageID == "msg_ebcff7091001rZYPcu2nkBEQaN")
+        #expect(permission.callID == "toolu_vrtx_01RS7Ytg947wehEnb8WBDzcV")
+    }
+
+    /// Verbatim `permission.replied` event from a real 1.16.2 server:
+    /// carries "requestID"/"reply" instead of the spec'd
+    /// "permissionID"/"response".
+    @Test func decodesRealPermissionRepliedEvent() throws {
+        let json = """
+        {
+          "id": "evt_ebd0078f4001F0yaxJvKndS6WT",
+          "type": "permission.replied",
+          "properties": {
+            "sessionID": "ses_143009242ffe1xK9KurTky0PxE",
+            "requestID": "per_ebcff7928001pLqki93NGCU7o4",
+            "reply": "reject"
+          }
+        }
+        """
+        let event = try decode(ServerEvent.self, json)
+        guard case .permissionReplied(let sessionID, let permissionID) = event else {
+            Issue.record("expected permissionReplied")
+            return
+        }
+        #expect(sessionID == "ses_143009242ffe1xK9KurTky0PxE")
+        #expect(permissionID == "per_ebcff7928001pLqki93NGCU7o4")
     }
 
     // MARK: - Status, providers, agents
