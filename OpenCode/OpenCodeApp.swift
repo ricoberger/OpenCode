@@ -6,27 +6,23 @@
 //
 
 import SwiftUI
-import SwiftData
 
 @main
 struct OpenCodeApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+    @State private var connection: ServerConnection
+    @State private var sessionStore: SessionStore
 
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    init() {
+        let connection = ServerConnection()
+        _connection = State(initialValue: connection)
+        _sessionStore = State(initialValue: SessionStore(connection: connection))
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(connection)
+                .environment(sessionStore)
         }
-        .modelContainer(sharedModelContainer)
     }
 }
