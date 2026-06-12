@@ -5,6 +5,10 @@
 //  Server address and optional basic-auth credentials, with a connection
 //  test against /global/health.
 //
+//  Saving applies the config via ServerConnection (which persists it and
+//  reconnects); Cancel discards edits. The form pre-fills from the current
+//  config so editing an existing setup works as expected.
+//
 
 import SwiftUI
 
@@ -12,6 +16,7 @@ struct SettingsView: View {
     @Environment(ServerConnection.self) private var connection
     @Environment(\.dismiss) private var dismiss
 
+    // Local draft state — only applied to the connection on Save.
     @State private var urlString = ""
     @State private var username = ""
     @State private var password = ""
@@ -35,6 +40,8 @@ struct SettingsView: View {
                 } header: {
                     Text("Server Address")
                 } footer: {
+                    // The server binds to 127.0.0.1 by default, which a
+                    // phone can never reach — worth spelling out here.
                     Text("Start the server with `opencode serve --hostname 0.0.0.0` so it is reachable from this device.")
                 }
 
@@ -105,6 +112,9 @@ struct SettingsView: View {
 
     // MARK: - Logic
 
+    /// Validates the form into a config. `nil` disables Save/Test. Accepts
+    /// bare host:port input by prepending "http://" — the common case when
+    /// typing on a phone.
     private var builtConfig: ServerConfig? {
         var trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -125,6 +135,7 @@ struct SettingsView: View {
         )
     }
 
+    /// Pre-fills the form with the currently saved config (if any).
     private func loadCurrentConfig() {
         guard let config = connection.config else { return }
         urlString = config.baseURL.absoluteString
@@ -132,6 +143,8 @@ struct SettingsView: View {
         password = config.password ?? ""
     }
 
+    /// Probes /global/health with a throwaway client built from the *draft*
+    /// config (not the saved one), so users can verify before saving.
     private func test() async {
         guard let config = builtConfig else { return }
         testResult = .testing
@@ -143,6 +156,7 @@ struct SettingsView: View {
         }
     }
 
+    /// Persists the config and kicks off a reconnect to the new server.
     private func save() {
         guard let config = builtConfig else { return }
         connection.apply(config: config)

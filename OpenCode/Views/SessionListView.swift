@@ -5,6 +5,9 @@
 //  Sidebar: root sessions sorted by last update, connection status bar,
 //  new-session and settings buttons, swipe-to-delete with confirmation.
 //
+//  Empty states double as onboarding: unconfigured → "Set Up Server",
+//  disconnected → error + retry, connected-but-empty → "New Session".
+//
 
 import SwiftUI
 
@@ -15,6 +18,8 @@ struct SessionListView: View {
     @Binding var selectedSessionID: String?
     @Binding var showSettings: Bool
 
+    /// Session pending deletion; non-nil drives the confirmation dialog.
+    /// Deletion is irreversible on the server, hence the extra tap.
     @State private var sessionToDelete: Session?
 
     var body: some View {
@@ -25,6 +30,7 @@ struct SessionListView: View {
                     isWorking: store.status(for: session.id).isWorking,
                     hasPendingPermission: !store.permissions(for: session.id).isEmpty
                 )
+                // Tag by ID to match the selection binding's type.
                 .tag(session.id)
                 .swipeActions(edge: .trailing) {
                     Button("Delete", systemImage: "trash", role: .destructive) {
@@ -48,9 +54,12 @@ struct SessionListView: View {
                 .disabled(!connection.state.isConnected)
             }
         }
+        // Persistent connection indicator pinned under the list.
         .safeAreaInset(edge: .bottom) {
             ConnectionStatusBar()
         }
+        // Manual re-sync escape hatch (the same full refresh that runs on
+        // every reconnect).
         .refreshable {
             await store.refreshAll()
         }
@@ -64,6 +73,8 @@ struct SessionListView: View {
         ) { session in
             Button("Delete \"\(session.displayTitle)\"", role: .destructive) {
                 Task {
+                    // Clear the selection first so the detail column does
+                    // not briefly show a deleted session.
                     if selectedSessionID == session.id {
                         selectedSessionID = nil
                     }
@@ -75,6 +86,7 @@ struct SessionListView: View {
         }
     }
 
+    /// Creates a session and navigates straight into it.
     private func createSession() {
         Task {
             if let session = await store.createSession() {
@@ -83,6 +95,8 @@ struct SessionListView: View {
         }
     }
 
+    /// Full-screen state overlaying the (empty) list. Which one shows is
+    /// driven by the connection state machine.
     @ViewBuilder
     private var emptyState: some View {
         switch connection.state {
@@ -114,6 +128,8 @@ struct SessionListView: View {
                     .buttonStyle(.borderedProminent)
             }
         default:
+            // Connecting, or connected with sessions: the list speaks for
+            // itself.
             EmptyView()
         }
     }
@@ -121,6 +137,8 @@ struct SessionListView: View {
 
 // MARK: - Row
 
+/// One sidebar entry: title, relative update time, and up to two trailing
+/// indicators (pending permission, agent working).
 private struct SessionRow: View {
     let session: Session
     let isWorking: Bool
@@ -132,6 +150,7 @@ private struct SessionRow: View {
                 Text(session.displayTitle)
                     .lineLimit(2)
                 if let updatedAt = session.updatedAt {
+                    // "5 minutes ago" style; updates on re-render.
                     Text(updatedAt, format: .relative(presentation: .named))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -140,6 +159,8 @@ private struct SessionRow: View {
 
             Spacer()
 
+            // Orange shield = the agent is blocked waiting for the user.
+            // Most important signal in the list, so it comes first.
             if hasPendingPermission {
                 Image(systemName: "lock.shield.fill")
                     .foregroundStyle(.orange)
@@ -154,6 +175,8 @@ private struct SessionRow: View {
 
 // MARK: - Connection status
 
+/// Slim status bar at the bottom of the sidebar: colored dot + label
+/// mirroring the `ConnectionState` machine.
 private struct ConnectionStatusBar: View {
     @Environment(ServerConnection.self) private var connection
 

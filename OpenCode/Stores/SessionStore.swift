@@ -3,8 +3,19 @@
 //  OpenCode
 //
 //  In-memory source of truth for sessions, messages, statuses, and pending
-//  permissions. Hydrated via REST on every (re)connect, then kept current by
-//  applying SSE events.
+//  permissions. There is no local persistence by design: the server owns
+//  the data, the app is a remote control.
+//
+//  Data flows in twice:
+//  1. Bulk: `refreshAll()` hydrates everything via REST. Runs on every
+//     (re)connect because SSE has no replay — see ServerConnection.
+//  2. Incremental: `apply(_:)` folds individual SSE events into the state.
+//
+//  Both paths are written to be idempotent (upserts keyed by id), so a
+//  re-sync racing an event stream cannot duplicate or corrupt state.
+//
+//  All user actions (send/abort/create/delete/respond) also live here so
+//  views stay free of API calls.
 //
 
 import Foundation
@@ -12,12 +23,21 @@ import Observation
 
 @Observable
 final class SessionStore {
+    // MARK: - Observable state
+
+    /// Root sessions, sorted by `timeUpdated` descending (sidebar order).
+    /// Child (subagent) sessions are filtered out on the way in.
     private(set) var sessions: [Session] = []
+    /// Message history per session ID. Only sessions the user has opened
+    /// are populated; entries update live via SSE part/message events.
     private(set) var messagesBySession: [String: [MessageWithParts]] = [:]
+    /// Working/idle state per session ID; missing entry means idle.
     private(set) var statuses: [String: SessionStatus] = [:]
+    /// Pending (unanswered) permission requests per session ID.
     private(set) var permissionsBySession: [String: [Permission]] = [:]
 
     private(set) var providers: [Provider] = []
+    /// Server default model per provider (providerID → modelID).
     private(set) var defaultModels: [String: String] = [:]
     private(set) var agents: [Agent] = []
 
@@ -25,9 +45,11 @@ final class SessionStore {
     var lastError: String?
 
     /// The session currently open in the chat view; its messages are
-    /// refreshed on every re-sync.
+    /// refreshed on every re-sync so a backgrounded chat catches up.
     var activeSessionID: String?
 
+    /// The model used for new prompts. App-wide (not per-session) by
+    /// design; persisted across launches.
     var selectedModel: ModelRef? {
         didSet {
             UserDefaults.standard.set(selectedModel?.providerID, forKey: "selectedProviderID")
@@ -35,6 +57,7 @@ final class SessionStore {
         }
     }
 
+    /// The agent used for new prompts. Same persistence rules as the model.
     var selectedAgent: String? {
         didSet {
             UserDefaults.standard.set(selectedAgent, forKey: "selectedAgent")
@@ -46,6 +69,8 @@ final class SessionStore {
     init(connection: ServerConnection) {
         self.connection = connection
 
+        // Restore the last-used model/agent; validated against the server's
+        // actual lists once `refreshAll()` has run (applyDefaultSelections).
         if
             let providerID = UserDefaults.standard.string(forKey: "selectedProviderID"),
             let modelID = UserDefaults.standard.string(forKey: "selectedModelID")
@@ -54,6 +79,8 @@ final class SessionStore {
         }
         self.selectedAgent = UserDefaults.standard.string(forKey: "selectedAgent")
 
+        // Wire up the connection: incremental events flow into `apply`,
+        // and every (re)connect triggers a full re-sync.
         connection.onEvent = { [weak self] event in
             self?.apply(event)
         }
@@ -62,7 +89,7 @@ final class SessionStore {
         }
     }
 
-    // MARK: - Derived state
+    // MARK: - Derived state (view-facing accessors)
 
     var rootSessions: [Session] {
         sessions
@@ -80,7 +107,8 @@ final class SessionStore {
         permissionsBySession[sessionID] ?? []
     }
 
-    /// Flat list of selectable models for the picker.
+    /// Flat list of selectable models for the picker, sorted by provider
+    /// then model name for a stable menu.
     var availableModels: [(ref: ModelRef, displayName: String)] {
         providers
             .sorted { $0.name < $1.name }
@@ -96,12 +124,15 @@ final class SessionStore {
             }
     }
 
+    /// Agents the user may pick (subagent-only agents are excluded).
     var selectableAgents: [Agent] {
         agents.filter(\.isSelectable)
     }
 
     // MARK: - Sync
 
+    /// Full state hydration via REST. Called on every (re)connect, and by
+    /// pull-to-refresh. The four fetches run concurrently.
     func refreshAll() async {
         guard let client = connection.client else { return }
 
@@ -119,8 +150,12 @@ final class SessionStore {
             self.defaultModels = providersResponse.defaults
             self.agents = try await agents
 
+            // Now that the real model/agent lists are known, make sure the
+            // remembered selection still exists (or pick sane defaults).
             applyDefaultSelections()
 
+            // Re-fetch the open conversation; its messages may have changed
+            // while we were disconnected.
             if let activeSessionID {
                 await loadMessages(sessionID: activeSessionID)
             }
@@ -129,6 +164,8 @@ final class SessionStore {
         }
     }
 
+    /// Loads (or reloads) the full message history of one session,
+    /// replacing whatever was cached for it.
     func loadMessages(sessionID: String) async {
         guard let client = connection.client else { return }
         do {
@@ -140,6 +177,9 @@ final class SessionStore {
 
     // MARK: - Actions
 
+    /// Creates a session and returns it so the caller can navigate into it.
+    /// The session is inserted optimistically; the `session.created` event
+    /// that follows is a harmless idempotent upsert.
     func createSession() async -> Session? {
         guard let client = connection.client else { return nil }
         do {
@@ -156,13 +196,18 @@ final class SessionStore {
         guard let client = connection.client else { return }
         do {
             try await client.deleteSession(id: session.id)
+            // Remove locally right away instead of waiting for the
+            // session.deleted event, so the row disappears immediately.
             remove(sessionID: session.id)
         } catch {
             report(error)
         }
     }
 
-    /// Sends a prompt. Throws so the composer can keep the draft on failure.
+    /// Sends a prompt. Throws so the composer can keep the draft on failure
+    /// (the draft is only cleared after the server accepted the prompt).
+    /// No optimistic message insert: the `message.updated` event arrives
+    /// within milliseconds on a healthy connection.
     func send(text: String, sessionID: String) async throws {
         guard let client = connection.client else {
             throw APIError.http(status: 0, message: "Not connected")
@@ -178,6 +223,8 @@ final class SessionStore {
         }
     }
 
+    /// Stops the running agent turn. The resulting status flip ("idle")
+    /// arrives via SSE; nothing to update locally.
     func abort(sessionID: String) async {
         guard let client = connection.client else { return }
         do {
@@ -187,6 +234,7 @@ final class SessionStore {
         }
     }
 
+    /// Answers a permission request (the agent is blocked until then).
     func respond(to permission: Permission, with response: PermissionResponse) async {
         guard let client = connection.client else { return }
         do {
@@ -195,6 +243,8 @@ final class SessionStore {
                 permissionID: permission.id,
                 response: response
             )
+            // Remove locally right away; the permission.replied event that
+            // follows is a no-op then.
             removePermission(id: permission.id, sessionID: permission.sessionID)
         } catch {
             report(error)
@@ -203,9 +253,13 @@ final class SessionStore {
 
     // MARK: - Event application
 
+    /// Folds one SSE event into the in-memory state. Pure state transition
+    /// (no I/O), which is what makes it unit-testable with scripted events.
     func apply(_ event: ServerEvent) {
         switch event {
         case .serverConnected, .unknown:
+            // serverConnected is handled by ServerConnection (re-sync);
+            // unknown events are deliberately dropped.
             break
 
         case .sessionCreated(let session), .sessionUpdated(let session):
@@ -221,6 +275,7 @@ final class SessionStore {
             statuses[sessionID] = .idle
 
         case .sessionError(_, let error):
+            // Aborts are user-initiated (stop button) — not worth a banner.
             if let error, !error.isAbort {
                 lastError = error.displayMessage
             }
@@ -242,6 +297,8 @@ final class SessionStore {
             messagesBySession[sessionID] = messages
 
         case .permissionUpdated(let permission):
+            // Upsert by id: the server may re-emit the same permission with
+            // updated details; it must not appear twice.
             var permissions = permissionsBySession[permission.sessionID] ?? []
             if let index = permissions.firstIndex(where: { $0.id == permission.id }) {
                 permissions[index] = permission
@@ -251,18 +308,24 @@ final class SessionStore {
             permissionsBySession[permission.sessionID] = permissions
 
         case .permissionReplied(let sessionID, let permissionID):
+            // Covers replies from this client *and* from other clients
+            // (e.g. the user answered in the TUI on their Mac).
             removePermission(id: permissionID, sessionID: sessionID)
         }
     }
 
     // MARK: - Private helpers
 
+    /// Replaces the session list (bulk sync path): drops subagent children
+    /// and sorts newest-updated first.
     private func setSessions(_ newSessions: [Session]) {
         sessions = newSessions
             .filter { $0.parentID == nil }
             .sorted { ($0.timeUpdated ?? 0) > ($1.timeUpdated ?? 0) }
     }
 
+    /// Inserts or updates a single session (event path), keeping the sort
+    /// order intact. Child sessions are ignored entirely.
     private func upsert(session: Session) {
         guard session.parentID == nil else { return }
         var updated = sessions
@@ -274,6 +337,7 @@ final class SessionStore {
         sessions = updated.sorted { ($0.timeUpdated ?? 0) > ($1.timeUpdated ?? 0) }
     }
 
+    /// Removes a session and all state tied to it.
     private func remove(sessionID: String) {
         sessions.removeAll { $0.id == sessionID }
         messagesBySession[sessionID] = nil
@@ -281,6 +345,9 @@ final class SessionStore {
         statuses[sessionID] = nil
     }
 
+    /// Inserts a new message or updates an existing one's metadata.
+    /// Crucially, updating metadata must *not* touch `parts` — part state
+    /// is owned by the part events.
     private func upsert(messageInfo info: MessageInfo) {
         var messages = messagesBySession[info.sessionID] ?? []
         if let index = messages.firstIndex(where: { $0.id == info.id }) {
@@ -291,6 +358,9 @@ final class SessionStore {
         messagesBySession[info.sessionID] = messages
     }
 
+    /// Inserts or replaces a part within its message. Parts stream
+    /// repeatedly with growing content (e.g. text accumulating), so
+    /// replace-by-id is the common case.
     private func upsert(part: Part) {
         var messages = messagesBySession[part.sessionID] ?? []
 
@@ -298,7 +368,8 @@ final class SessionStore {
         if let index = messages.firstIndex(where: { $0.id == part.messageID }) {
             messageIndex = index
         } else {
-            // Part arrived before its message: create a placeholder; the
+            // Part arrived before its message (SSE makes no ordering
+            // promises across event types): create a placeholder; the
             // message.updated event will fill in the real info.
             let placeholder = MessageInfo(id: part.messageID, sessionID: part.sessionID, role: .assistant)
             messages.append(MessageWithParts(info: placeholder, parts: []))
@@ -317,6 +388,9 @@ final class SessionStore {
         permissionsBySession[sessionID]?.removeAll { $0.id == id }
     }
 
+    /// Ensures the selected model/agent actually exist on the server,
+    /// falling back to the server's defaults. Runs after every re-sync, so
+    /// switching servers (or a server losing a provider) self-heals.
     private func applyDefaultSelections() {
         let allModels = availableModels
 
@@ -325,6 +399,8 @@ final class SessionStore {
         } ?? false
 
         if !selectionIsValid {
+            // Prefer the server's declared default; the sorted-first key
+            // just makes the choice deterministic when there are several.
             if
                 let providerID = defaultModels.keys.sorted().first,
                 let modelID = defaultModels[providerID]
@@ -340,11 +416,14 @@ final class SessionStore {
         } ?? false
 
         if !agentIsValid {
+            // "build" is opencode's standard default agent.
             selectedAgent = selectableAgents.first { $0.name == "build" }?.name
                 ?? selectableAgents.first?.name
         }
     }
 
+    /// Funnels action/sync errors into the banner, dropping cancellations
+    /// (those are lifecycle noise, not user-relevant failures).
     private func report(_ error: Error) {
         if error is CancellationError { return }
         if let urlError = error as? URLError, urlError.code == .cancelled { return }

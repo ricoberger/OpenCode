@@ -3,13 +3,25 @@
 //  OpenCode
 //
 //  Rendering for messages and their parts, per the v1 rendering matrix:
-//  text as markdown, reasoning collapsed, tools as compact expandable cards,
-//  files as chips, structural parts hidden, unknown types as placeholders.
+//
+//  | Part type        | Treatment                                   |
+//  |------------------|---------------------------------------------|
+//  | text             | markdown bubble (user: plain trailing)      |
+//  | reasoning        | collapsed "Thinking" disclosure             |
+//  | tool             | compact expandable status card              |
+//  | file             | filename chip                               |
+//  | agent/subtask    | small informational chip                    |
+//  | step/snapshot/…  | hidden (structural markers)                 |
+//  | unknown          | "Unsupported part" placeholder chip         |
+//
+//  Tool calls get real-but-compact rendering on purpose: hiding them makes
+//  supervising an agent impossible, full payloads make it unreadable.
 //
 
 import MarkdownUI
 import SwiftUI
 
+/// Entry point per message: branches on the author role.
 struct MessageView: View {
     let message: MessageWithParts
 
@@ -18,6 +30,8 @@ struct MessageView: View {
         case .user:
             UserMessageView(message: message)
         case .assistant, .unknown:
+            // Unknown roles render like assistant turns — their parts still
+            // display individually, which beats hiding content.
             AssistantMessageView(message: message)
         }
     }
@@ -25,6 +39,8 @@ struct MessageView: View {
 
 // MARK: - User
 
+/// A user prompt: right-aligned tinted bubble, plain text (user input is
+/// not markdown-rendered — what was typed is what shows).
 private struct UserMessageView: View {
     let message: MessageWithParts
 
@@ -32,6 +48,7 @@ private struct UserMessageView: View {
         let text = userText
         if !text.isEmpty {
             HStack {
+                // Keeps the bubble from spanning the full width, chat-style.
                 Spacer(minLength: 48)
                 Text(text)
                     .padding(.horizontal, 14)
@@ -43,6 +60,8 @@ private struct UserMessageView: View {
         }
     }
 
+    /// Joins the visible text parts. Synthetic/ignored parts are system
+    /// injections or reverted content — not something the user typed.
     private var userText: String {
         message.parts.compactMap { part -> String? in
             if case .text(let data) = part.content, !data.synthetic, !data.ignored {
@@ -56,6 +75,8 @@ private struct UserMessageView: View {
 
 // MARK: - Assistant
 
+/// An assistant turn: its parts stacked vertically in arrival order, plus
+/// an error banner when the turn failed.
 private struct AssistantMessageView: View {
     let message: MessageWithParts
 
@@ -65,6 +86,8 @@ private struct AssistantMessageView: View {
                 PartView(part: part)
             }
 
+            // Aborts are deliberately suppressed: the user pressed stop,
+            // a red banner would be noise.
             if let error = message.info.error, !error.isAbort {
                 Label(error.displayMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
@@ -79,6 +102,8 @@ private struct AssistantMessageView: View {
 
 // MARK: - Parts
 
+/// Dispatches one part to its visual treatment (see the matrix at the top
+/// of this file).
 private struct PartView: View {
     let part: Part
 
@@ -86,6 +111,9 @@ private struct PartView: View {
         switch part.content {
         case .text(let data):
             if !data.synthetic && !data.ignored && !data.text.isEmpty {
+                // MarkdownUI renders full GFM (code blocks, lists, tables) —
+                // native AttributedString markdown only handles inline
+                // styles, which is not enough for a coding agent's output.
                 Markdown(data.text)
                     .markdownTextStyle(\.code) {
                         FontFamilyVariant(.monospaced)
@@ -118,12 +146,16 @@ private struct PartView: View {
             }
 
         case .subtask(let data):
-            Label(data.description ?? data.prompt ?? "Subtask", systemImage: "arrow.triangle.branch")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            Label(
+                data.description ?? data.prompt ?? "Subtask", systemImage: "arrow.triangle.branch"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
 
         case .unknown(let type):
+            // The lenient-decoding fallback made visible: a newer server
+            // sent a part type this app version does not know.
             if !type.isEmpty {
                 Text("Unsupported part: \(type)")
                     .font(.caption)
@@ -134,6 +166,8 @@ private struct PartView: View {
             }
 
         case .stepStart, .stepFinish, .snapshot, .patch, .retry, .compaction:
+            // Structural markers — meaningful to the server, noise to the
+            // reader.
             EmptyView()
         }
     }
@@ -141,6 +175,9 @@ private struct PartView: View {
 
 // MARK: - Reasoning
 
+/// Collapsed-by-default "Thinking" section. Plain text (not markdown):
+/// reasoning content is rough and high-volume, monospace markdown rendering
+/// would slow scrolling for little benefit.
 private struct ReasoningView: View {
     let data: ReasoningPartData
     @State private var expanded = false
@@ -163,6 +200,13 @@ private struct ReasoningView: View {
 
 // MARK: - Tool card
 
+/// Compact, expandable rendering of one tool invocation.
+///
+/// Collapsed: status icon + tool name + one-line summary (the bash command,
+/// the file path, ...). Tapping expands to the input arguments, the
+/// (truncated) output, and the error message if the call failed. The same
+/// card re-renders through the pending → running → completed/error
+/// lifecycle as part updates stream in.
 private struct ToolCard: View {
     let data: ToolPartData
     @State private var expanded = false
@@ -183,6 +227,8 @@ private struct ToolCard: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        // Middle truncation keeps both ends of paths/commands
+                        // visible — usually the informative parts.
                         .truncationMode(.middle)
 
                     Spacer(minLength: 4)
@@ -192,6 +238,7 @@ private struct ToolCard: View {
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                 }
+                // Make the whole row tappable, not just the visible glyphs.
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -204,6 +251,7 @@ private struct ToolCard: View {
         .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 10))
     }
 
+    /// One glyph per lifecycle state (see ToolPartData.Status).
     @ViewBuilder
     private var statusIcon: some View {
         switch data.status {
@@ -232,6 +280,8 @@ private struct ToolCard: View {
     @ViewBuilder
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Input arguments — skip the empty-object case to avoid a
+            // useless "{}" line.
             if let input = data.input, input != .object([:]) {
                 Text(input.displayString)
                     .font(.caption2.monospaced())
@@ -240,6 +290,8 @@ private struct ToolCard: View {
                     .textSelection(.enabled)
             }
 
+            // Output is capped twice: by character count (huge outputs would
+            // make SwiftUI text layout crawl) and by visible line count.
             if let output = data.output, !output.isEmpty {
                 Text(truncated(output))
                     .font(.caption2.monospaced())

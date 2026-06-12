@@ -5,6 +5,10 @@
 //  The conversation: streamed messages, pending permission cards, and the
 //  composer. Messages load on appear and re-sync via the session store.
 //
+//  Rendering is driven entirely by the store — this view holds no message
+//  state of its own. Streaming updates (parts growing token by token)
+//  arrive as store mutations and re-render the affected rows.
+//
 
 import SwiftUI
 
@@ -16,35 +20,48 @@ struct ChatView: View {
 
     var body: some View {
         ScrollView {
+            // Lazy: histories can be long and tool outputs heavy; only
+            // visible rows are materialized.
             LazyVStack(alignment: .leading, spacing: 16) {
                 ForEach(store.messages(for: session.id)) { message in
                     MessageView(message: message)
                 }
+                // Pending permissions render at the end of the transcript —
+                // chronologically that is where the agent is blocked.
                 ForEach(store.permissions(for: session.id)) { permission in
                     PermissionCard(permission: permission)
                 }
             }
             .padding()
         }
+        // Chat-style scrolling: start at the bottom (newest content).
         .defaultScrollAnchor(.bottom)
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Subtle "agent is working" indicator in the chat header.
             if store.status(for: session.id).isWorking {
                 ToolbarItem(placement: .topBarTrailing) {
                     ProgressView()
                 }
             }
         }
+        // The composer sits in the bottom safe-area inset so the scroll
+        // content is never hidden behind it.
         .safeAreaInset(edge: .bottom) {
             ComposerView(session: session)
         }
+        // Keyed by session ID: switching sessions cancels the old load and
+        // starts a fresh one. Also registers this session as "active" so
+        // refreshAll() reloads its messages after reconnects.
         .task(id: session.id) {
             store.activeSessionID = session.id
             await store.loadMessages(sessionID: session.id)
         }
         .onDisappear {
+            // Only clear if we are still the active session — on iPhone a
+            // push/pop can interleave appear/disappear between two chats.
             if store.activeSessionID == session.id {
                 store.activeSessionID = nil
             }
@@ -54,6 +71,9 @@ struct ChatView: View {
 
 // MARK: - Permission card
 
+/// Inline approval prompt rendered in the transcript. Shows what the agent
+/// wants to do (title + patterns) right where the user is already reading,
+/// with the three replies the server accepts.
 struct PermissionCard: View {
     @Environment(SessionStore.self) private var store
 
@@ -70,6 +90,8 @@ struct PermissionCard: View {
                     .font(.callout)
             }
 
+            // The pattern(s) an "Always Allow" would whitelist — the user
+            // should see the scope before granting it permanently.
             if !permission.patterns.isEmpty {
                 Text(permission.patterns.joined(separator: ", "))
                     .font(.caption.monospaced())
@@ -90,6 +112,7 @@ struct PermissionCard: View {
                 }
                 .buttonStyle(.bordered)
 
+                // "Allow Once" is the prominent default action.
                 Button("Allow Once") {
                     respond(.once)
                 }
