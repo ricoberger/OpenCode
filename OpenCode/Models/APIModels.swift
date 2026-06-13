@@ -576,6 +576,56 @@ struct SubtaskPartData: Hashable {
     }
 }
 
+// MARK: - Skills
+
+/// A reusable instruction set exposed by the opencode server — typically
+/// a markdown file living under `~/.claude/skills/<name>/SKILL.md` or
+/// inside the project. Surfaced read-only via `GET /skill`; the agent
+/// itself decides when to load one based on the user's request matching
+/// the skill's `description`.
+///
+/// The iOS client uses this for a browse-and-hint picker: tapping a
+/// skill prepends `/<name>` to the composer draft, nudging the agent to
+/// apply that skill on the next turn. The picker only needs `name` and
+/// `description`; `content` and `location` are decoded but not rendered
+/// in v1 (no detail view).
+struct Skill: Hashable, Identifiable, Decodable {
+    /// The skill's slug — what gets injected as the `/<name>` slash
+    /// command. Doubles as the stable identity for SwiftUI lists.
+    var name: String
+    /// Short, human-readable explanation of when the agent should load
+    /// this skill. May be multi-paragraph; the picker truncates.
+    var description: String
+    /// Filesystem path where the skill's `SKILL.md` lives. Decoded for
+    /// debugging / future detail view; v1 doesn't surface it.
+    var location: String
+    /// Full markdown body. Can be large (~17 KB on the bigger skills);
+    /// kept on the model so a future detail view doesn't need a second
+    /// fetch, but never rendered by v1.
+    var content: String
+
+    var id: String { name }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        // Only `name` is strictly required for identity. Everything else
+        // degrades gracefully to keep the lenient-decoding contract:
+        // a malformed skill becomes a placeholder, not a thrown error.
+        self.name = try container.decode(String.self, forKey: AnyCodingKey("name"))
+        self.description = container.string("description") ?? ""
+        self.location = container.string("location") ?? ""
+        self.content = container.string("content") ?? ""
+    }
+
+    /// Memberwise convenience for tests and previews.
+    init(name: String, description: String = "", location: String = "", content: String = "") {
+        self.name = name
+        self.description = description
+        self.location = location
+        self.content = content
+    }
+}
+
 // MARK: - Todos
 
 /// A single agent-planned task item, owned server-side by the `TodoWrite`

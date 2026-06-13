@@ -147,6 +147,14 @@ struct APIClient {
         try await get("/agent")
     }
 
+    /// `GET /skill` — available skills (instruction sets the agent can
+    /// load on demand). Server-wide resource; refetched on every
+    /// `refreshAll()`. The server does not emit a corresponding SSE
+    /// event for skill changes, so this is hydrate-only.
+    func skills() async throws -> [Skill] {
+        try await get("/skill")
+    }
+
     /// `GET /session/:id/todo` — the agent's current todo list for one
     /// session. Returns the full canonical list (replacement semantics);
     /// also pushed live via `todo.updated` SSE events.

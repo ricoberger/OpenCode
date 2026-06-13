@@ -2,7 +2,7 @@
 //  ComposerView.swift
 //  OpenCode
 //
-//  Prompt input with attachments, send, and stop.
+//  Prompt input with attachments, skill hints, send, and stop.
 //
 //  Behavior decisions baked in here:
 //  - The draft (text + attachments) is only cleared after the server
@@ -15,6 +15,11 @@
 //  - Attachments are encoded inline as `data:` URLs (the server has no
 //    upload endpoint). Images go through AttachmentEncoder — see
 //    `Utilities/AttachmentEncoding.swift` for the resize policy.
+//  - The "add" Menu (the `plus` icon left of the TextField) bundles
+//    Photo Library, Files, and Skill. The first two queue an
+//    attachment chip; the third injects a `/<skill-name> ` prefix into
+//    the draft via SkillPrefix.apply — same Menu, two different
+//    mechanical outcomes, intentional consolidation.
 //  - The chip strip is only rendered when at least one attachment is
 //    queued; the input row otherwise stays compact.
 //  - Send is disabled while any attachment is still loading and while any
@@ -55,6 +60,8 @@ struct ComposerView: View {
     @State private var showingPhotosPicker = false
     /// Drives the `.fileImporter` sheet (Files app).
     @State private var showingFileImporter = false
+    /// Drives the skills picker sheet.
+    @State private var showingSkillPicker = false
 
     private var isWorking: Bool {
         store.status(for: session.id).isWorking
@@ -84,7 +91,7 @@ struct ComposerView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                attachMenu
+                addMenu
 
                 TextField(
                     isConnected ? "Message" : "Disconnected",
@@ -187,15 +194,33 @@ struct ComposerView: View {
                 break
             }
         }
+        // Skill picker — bottom sheet, dismisses itself once a skill is
+        // tapped (the callback rewrites the draft via SkillPrefix.apply).
+        .sheet(isPresented: $showingSkillPicker) {
+            SkillListSheet { name in
+                draft = SkillPrefix.apply(skillName: name, to: draft)
+                // Land the caret in the composer so the user can keep
+                // typing the actual prompt without a second tap.
+                isFocused = true
+            }
+        }
     }
 
     // MARK: - Attach menu
 
-    /// Paperclip Menu with Photos + Files entries. Both items are plain
-    /// Buttons that flip presentation flags — see the comments on
-    /// `showingPhotosPicker` for why we don't use the inline
-    /// `PhotosPicker` view form here.
-    private var attachMenu: some View {
+    // MARK: - Add menu
+
+    /// The `plus` Menu left of the TextField. Three entries — two add
+    /// attachments (chip strip outcome), one injects a slash command
+    /// into the draft (text mutation outcome). Icon is `plus` (not
+    /// `paperclip`) to broadcast "add anything," matching iMessage's
+    /// `+` convention; otherwise users would expect only file attach
+    /// behavior and find the Skill entry surprising.
+    ///
+    /// All three are plain Buttons that flip presentation flags. The
+    /// inline `PhotosPicker` view form gets eaten by Menu and never
+    /// presents — see the `showingPhotosPicker` comment above.
+    private var addMenu: some View {
         Menu {
             Button {
                 showingPhotosPicker = true
@@ -208,15 +233,25 @@ struct ComposerView: View {
             } label: {
                 Label("Files", systemImage: "folder")
             }
+
+            Button {
+                showingSkillPicker = true
+            } label: {
+                Label("Skill", systemImage: "wand.and.stars")
+            }
         } label: {
-            Image(systemName: "paperclip")
+            // `plus.circle.fill` (not bare `plus`) so the icon's filled
+            // circle matches the visual weight of `arrow.up.circle.fill`
+            // (send) and `stop.circle.fill` (stop) — all three sit on the
+            // same baseline at .title2 with identical bounding boxes.
+            Image(systemName: "plus.circle.fill")
                 .font(.title2)
                 .foregroundStyle(.secondary)
                 // Same optical centering as the send/stop buttons.
                 .padding(.bottom, 6)
         }
         .disabled(!isConnected)
-        .accessibilityLabel("Add Attachment")
+        .accessibilityLabel("Add")
     }
 
     // MARK: - Actions

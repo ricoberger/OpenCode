@@ -44,6 +44,10 @@ final class SessionStore {
     /// Server default model per provider (providerID → modelID).
     private(set) var defaultModels: [String: String] = [:]
     private(set) var agents: [Agent] = []
+    /// Server-wide list of skills (instruction sets the agent can load).
+    /// Hydrated by `refreshAll` and never patched live — the server does
+    /// not emit skill-change events, so a reconnect re-fetches.
+    private(set) var skills: [Skill] = []
 
     /// Transient error surfaced as a banner; cleared automatically by the UI.
     var lastError: String?
@@ -149,6 +153,7 @@ final class SessionStore {
             async let statuses = client.sessionStatuses()
             async let providers = client.providers()
             async let agents = client.agents()
+            async let skills = client.skills()
 
             setSessions(try await sessions)
             self.statuses = try await statuses
@@ -157,6 +162,7 @@ final class SessionStore {
             self.providers = providersResponse.providers
             self.defaultModels = providersResponse.defaults
             self.agents = try await agents
+            self.skills = try await skills
 
             // Now that the real model/agent lists are known, make sure the
             // remembered selection still exists (or pick sane defaults).
