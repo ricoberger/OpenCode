@@ -25,6 +25,12 @@ struct ChatView: View {
     /// the parent guarantees this resets when the user switches sessions.
     @State private var showingTodos = false
 
+    /// Drives the rename alert presented from the chat settings menu. The
+    /// draft is seeded from the current title when the alert opens, so a
+    /// small edit is one keystroke away.
+    @State private var isRenaming = false
+    @State private var renameDraft = ""
+
     var body: some View {
         ScrollView {
             // Lazy: histories can be long and tool outputs heavy; only
@@ -69,6 +75,18 @@ struct ChatView: View {
         .sheet(isPresented: $showingTodos) {
             TodoListSheet(sessionID: session.id)
         }
+        // Rename alert: a single TextField inside a native alert. Closes
+        // unconditionally on Save/Cancel — failures surface via the
+        // store's error banner, matching the rest of the store actions.
+        .alert("Rename Session", isPresented: $isRenaming) {
+            TextField("Title", text: $renameDraft)
+                .textInputAutocapitalization(.sentences)
+            Button("Save") { commitRename() }
+                .disabled(!isRenameDraftValid)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a new title for this session.")
+        }
         // Note: message loading is intentionally NOT triggered here.
         // ContentView drives it from the sidebar selection — a `.task` on
         // this view gets cancelled (and never restarted) by the spurious
@@ -76,10 +94,10 @@ struct ChatView: View {
         // transitions on iPhone.
     }
 
-    /// Per-chat settings: model and agent used for new prompts, plus a
-    /// read-only view of the agent's current todo list. The two pickers
-    /// configure *future* prompts; the Todos button reveals existing
-    /// session state — the Divider makes that split explicit.
+    /// Per-chat settings menu, split by a single Divider:
+    ///   • Above: model + agent used for *new* prompts (configure).
+    ///   • Below: actions and views scoped to *this* session — Rename
+    ///     (mutate the title) and Todos (read the agent's current plan).
     private var chatSettingsMenu: some View {
         @Bindable var store = store
         return Menu {
@@ -99,6 +117,16 @@ struct ChatView: View {
 
             Divider()
 
+            // Mutates this session (PATCHes the title); seeds the alert
+            // draft so the existing title is one backspace away from
+            // being edited.
+            Button {
+                renameDraft = session.title
+                isRenaming = true
+            } label: {
+                Label("Rename Session", systemImage: "pencil")
+            }
+
             // Always visible — tapping with an empty list shows the
             // "no plan yet" placeholder, which is itself useful feedback.
             Button {
@@ -113,6 +141,25 @@ struct ChatView: View {
         // providers/agents fetch — but the Todos button works without
         // either, so we only disable on the truly-empty initial state.
         .disabled(store.availableModels.isEmpty && store.selectableAgents.isEmpty)
+    }
+
+    /// `true` when the draft is non-empty (after trimming whitespace) and
+    /// genuinely different from the current title — Save is pointless
+    /// otherwise. Mirrored on the alert's Save button.
+    private var isRenameDraftValid: Bool {
+        let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed != session.title
+    }
+
+    /// Fires the rename. The alert is already dismissed by the time this
+    /// runs (SwiftUI closes the alert before invoking the button action);
+    /// errors surface via the store's error banner.
+    private func commitRename() {
+        let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != session.title else { return }
+        Task {
+            await store.renameSession(session, to: trimmed)
+        }
     }
 }
 
