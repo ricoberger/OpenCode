@@ -226,6 +226,22 @@ final class SessionStore {
         }
     }
 
+    /// Renames a session via `PATCH /session/:id`. Applies the server's
+    /// echoed session right away so the title bar and sidebar update
+    /// without waiting for the `session.updated` SSE event that follows
+    /// (the event is then a harmless idempotent upsert). Errors funnel
+    /// through the banner — the rename alert closes regardless, matching
+    /// the rest of the store's fire-and-forget action style.
+    func renameSession(_ session: Session, to newTitle: String) async {
+        guard let client = connection.client else { return }
+        do {
+            let updated = try await client.updateSession(id: session.id, title: newTitle)
+            upsert(session: updated)
+        } catch {
+            report(error)
+        }
+    }
+
     /// Sends a prompt. Throws so the composer can keep the draft on failure
     /// (the draft is only cleared after the server accepted the prompt).
     /// No optimistic message insert: the `message.updated` event arrives

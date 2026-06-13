@@ -154,6 +154,15 @@ struct APIClient {
         try await get("/session/\(sessionID)/todo")
     }
 
+    /// `PATCH /session/:id` — edits session properties (currently just the
+    /// title; the endpoint accepts `metadata`, `permission`, and
+    /// `time.archived` too, none of which v1 surfaces). Returns the updated
+    /// session. A `session.updated` SSE event follows and is a harmless
+    /// idempotent upsert.
+    func updateSession(id: String, title: String) async throws -> Session {
+        try await patch("/session/\(id)", body: UpdateSessionRequest(title: title))
+    }
+
     // MARK: - Request building
 
     /// Builds a request with shared headers. The `some Encodable` body is
@@ -193,6 +202,17 @@ struct APIClient {
     /// POST + decode helper, for endpoints that return a body.
     private func post<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
         let data = try await send(request(path: path, method: "POST", body: body))
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw APIError.decoding(error)
+        }
+    }
+
+    /// PATCH + decode helper, for partial-update endpoints that return the
+    /// resulting resource (e.g. `PATCH /session/:id`).
+    private func patch<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
+        let data = try await send(request(path: path, method: "PATCH", body: body))
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {

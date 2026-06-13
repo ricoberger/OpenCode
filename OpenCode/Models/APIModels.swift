@@ -909,6 +909,14 @@ struct CreateSessionRequest: Encodable {
     var title: String?
 }
 
+/// Body of `PATCH /session/:id`. The server's endpoint also accepts
+/// `metadata`, `permission`, and `time.archived`; v1 only sets `title`
+/// (rename) but the struct stays focused so adding more fields later is a
+/// non-breaking change for call sites.
+struct UpdateSessionRequest: Encodable {
+    var title: String?
+}
+
 /// Body of `POST /session/:id/permissions/:permissionID`.
 struct PermissionReplyRequest: Encodable {
     var response: PermissionResponse
