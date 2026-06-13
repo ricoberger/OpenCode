@@ -5,6 +5,15 @@ Connect the app to an `opencode serve` instance running on your computer and
 take your sessions with you: read conversations, send prompts, watch the agent
 work in real time, and answer permission requests from your phone.
 
+<div align="center">
+  <table>
+    <tr>
+      <td><img src="./.github/assets/screenshot-1.png" /></td>
+      <td><img src="./.github/assets/screenshot-2.png" /></td>
+    </tr>
+  </table>
+</div>
+
 ## Features
 
 - **Sessions** — browse, create, and delete the sessions on your server; live
