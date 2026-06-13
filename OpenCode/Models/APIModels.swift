@@ -576,6 +576,49 @@ struct SubtaskPartData: Hashable {
     }
 }
 
+// MARK: - Todos
+
+/// A single agent-planned task item, owned server-side by the `TodoWrite`
+/// tool. Surfaced as session-level state via `GET /session/:id/todo` plus
+/// the `todo.updated` SSE event — both deliver the *full* list (replacement
+/// semantics), so the store stores it whole and never patches in place.
+///
+/// The wire shape has no stable id; iteration uses `id: \.self` (the struct
+/// is `Hashable`). Two todos that hash identically across an update will
+/// collapse into one row, which is acceptable: the agent does not emit
+/// duplicate plan items in practice.
+struct TodoItem: Hashable, Decodable {
+    enum Status: String {
+        case pending
+        case inProgress = "in_progress"
+        case completed
+        case cancelled
+        /// Forward-compatibility for new status values (e.g. a future
+        /// "blocked"). Renders with the unknown-discriminator glyph.
+        case unknown
+    }
+
+    var content: String
+    var status: Status
+    /// Required by the spec; carried on the model but not rendered by v1
+    /// (the agent emits "medium" for almost everything — low signal).
+    var priority: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        self.content = container.string("content") ?? ""
+        self.status = container.string("status").flatMap(Status.init(rawValue:)) ?? .unknown
+        self.priority = container.string("priority") ?? ""
+    }
+
+    /// Memberwise convenience for tests and previews.
+    init(content: String, status: Status, priority: String = "medium") {
+        self.content = content
+        self.status = status
+        self.priority = priority
+    }
+}
+
 // MARK: - Message + parts envelope
 
 /// The shape returned by `GET /session/:id/message`: message metadata plus
@@ -647,7 +690,9 @@ struct Permission: Identifiable, Hashable, Decodable {
         self.metadata = container.json("metadata")
         // Real servers send "patterns" (array); the spec shape is
         // "pattern" as either a single string or an array.
-        if let patterns = try? container.decodeIfPresent([String].self, forKey: AnyCodingKey("patterns")) {
+        if let patterns = try? container.decodeIfPresent(
+            [String].self, forKey: AnyCodingKey("patterns"))
+        {
             self.patterns = patterns
         } else {
             switch container.json("pattern") {
@@ -905,6 +950,9 @@ enum ServerEvent: Decodable {
     case sessionUpdated(Session)
     case sessionDeleted(Session)
     case sessionError(sessionID: String?, error: AssistantError?)
+    /// Full replacement of a session's todo list. The server emits the
+    /// whole array on every update, so the store can swap it in wholesale.
+    case todoUpdated(sessionID: String, todos: [TodoItem])
     case unknown(type: String)
 
     init(from decoder: Decoder) throws {
@@ -998,6 +1046,15 @@ enum ServerEvent: Decodable {
                 sessionID: properties?.string("sessionID"),
                 error: properties?.json("error").flatMap(AssistantError.init(json:))
             )
+        case "todo.updated":
+            if let todos = decodeProperties([TodoItem].self, "todos") {
+                self = .todoUpdated(
+                    sessionID: properties?.string("sessionID") ?? "",
+                    todos: todos
+                )
+            } else {
+                self = .unknown(type: type)
+            }
         default:
             self = .unknown(type: type)
         }

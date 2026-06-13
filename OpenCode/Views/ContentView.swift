@@ -75,7 +75,11 @@ struct ContentView: View {
         .onChange(of: selectedSessionID) { _, newID in
             store.activeSessionID = newID
             if let newID {
+                // Two parallel loads: the transcript and the agent's
+                // current todo list. Both write keyed by session ID, so
+                // concurrent fetches across rapid switches are safe.
                 Task { await store.loadMessages(sessionID: newID) }
+                Task { await store.loadTodos(sessionID: newID) }
             }
         }
     }

@@ -147,6 +147,13 @@ struct APIClient {
         try await get("/agent")
     }
 
+    /// `GET /session/:id/todo` — the agent's current todo list for one
+    /// session. Returns the full canonical list (replacement semantics);
+    /// also pushed live via `todo.updated` SSE events.
+    func todos(sessionID: String) async throws -> [TodoItem] {
+        try await get("/session/\(sessionID)/todo")
+    }
+
     // MARK: - Request building
 
     /// Builds a request with shared headers. The `some Encodable` body is

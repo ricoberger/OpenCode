@@ -20,6 +20,11 @@ struct ChatView: View {
 
     let session: Session
 
+    /// Drives the Todos bottom sheet presented from the chat settings menu.
+    /// Local to ChatView (per-session, ephemeral) — `.id(session.id)` on
+    /// the parent guarantees this resets when the user switches sessions.
+    @State private var showingTodos = false
+
     var body: some View {
         ScrollView {
             // Lazy: histories can be long and tool outputs heavy; only
@@ -58,6 +63,12 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom) {
             ComposerView(session: session)
         }
+        // Bottom-sheet view of the agent's current todo list. Data is
+        // already in the store by the time this presents (loaded on
+        // session selection in ContentView); SSE keeps it live while open.
+        .sheet(isPresented: $showingTodos) {
+            TodoListSheet(sessionID: session.id)
+        }
         // Note: message loading is intentionally NOT triggered here.
         // ContentView drives it from the sidebar selection — a `.task` on
         // this view gets cancelled (and never restarted) by the spurious
@@ -65,9 +76,10 @@ struct ChatView: View {
         // transitions on iPhone.
     }
 
-    /// Per-chat settings: model and agent used for new prompts. Selection
-    /// is app-wide and persisted (see SessionStore); the pickers render as
-    /// submenus showing the current choice.
+    /// Per-chat settings: model and agent used for new prompts, plus a
+    /// read-only view of the agent's current todo list. The two pickers
+    /// configure *future* prompts; the Todos button reveals existing
+    /// session state — the Divider makes that split explicit.
     private var chatSettingsMenu: some View {
         @Bindable var store = store
         return Menu {
@@ -84,11 +96,22 @@ struct ChatView: View {
                 }
             }
             .pickerStyle(.menu)
+
+            Divider()
+
+            // Always visible — tapping with an empty list shows the
+            // "no plan yet" placeholder, which is itself useful feedback.
+            Button {
+                showingTodos = true
+            } label: {
+                Label("Todos", systemImage: "checklist")
+            }
         } label: {
             Label("Chat Settings", systemImage: "gearshape")
         }
-        // Both lists are empty until the first successful providers/agents
-        // fetch — nothing to pick yet.
+        // Both picker lists are empty until the first successful
+        // providers/agents fetch — but the Todos button works without
+        // either, so we only disable on the truly-empty initial state.
         .disabled(store.availableModels.isEmpty && store.selectableAgents.isEmpty)
     }
 }

@@ -95,6 +95,6 @@ Data flow rules:
 
 ## Out of scope for v1 (intentional)
 
-File browser, diffs, todos, share links, fork/revert, shell/slash commands,
-sending attachments, multiple servers, offline cache, push notifications (top v2
+File browser, diffs, share links, fork/revert, shell/slash commands, sending
+attachments, multiple servers, offline cache, push notifications (top v2
 candidate: notify on pending permissions).

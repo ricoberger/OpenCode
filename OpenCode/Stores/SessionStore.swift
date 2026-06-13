@@ -35,6 +35,10 @@ final class SessionStore {
     private(set) var statuses: [String: SessionStatus] = [:]
     /// Pending (unanswered) permission requests per session ID.
     private(set) var permissionsBySession: [String: [Permission]] = [:]
+    /// Current todo list per session ID. Lazy-populated: only sessions the
+    /// user has opened have an entry. Server delivers full-list snapshots
+    /// (both REST and SSE), so updates replace the array wholesale.
+    private(set) var todosBySession: [String: [TodoItem]] = [:]
 
     private(set) var providers: [Provider] = []
     /// Server default model per provider (providerID → modelID).
@@ -107,6 +111,10 @@ final class SessionStore {
         permissionsBySession[sessionID] ?? []
     }
 
+    func todos(for sessionID: String) -> [TodoItem] {
+        todosBySession[sessionID] ?? []
+    }
+
     /// Flat list of selectable models for the picker, sorted by provider
     /// then model name for a stable menu.
     var availableModels: [(ref: ModelRef, displayName: String)] {
@@ -158,6 +166,7 @@ final class SessionStore {
             // while we were disconnected.
             if let activeSessionID {
                 await loadMessages(sessionID: activeSessionID)
+                await loadTodos(sessionID: activeSessionID)
             }
         } catch {
             report(error)
@@ -170,6 +179,19 @@ final class SessionStore {
         guard let client = connection.client else { return }
         do {
             messagesBySession[sessionID] = try await client.messages(sessionID: sessionID)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Loads (or reloads) the current todo list for one session. Called
+    /// alongside `loadMessages` on session selection so the Todos sheet
+    /// opens with data already present; SSE `todo.updated` events keep
+    /// it current while the user is viewing it.
+    func loadTodos(sessionID: String) async {
+        guard let client = connection.client else { return }
+        do {
+            todosBySession[sessionID] = try await client.todos(sessionID: sessionID)
         } catch {
             report(error)
         }
@@ -311,6 +333,11 @@ final class SessionStore {
             // Covers replies from this client *and* from other clients
             // (e.g. the user answered in the TUI on their Mac).
             removePermission(id: permissionID, sessionID: sessionID)
+
+        case .todoUpdated(let sessionID, let todos):
+            // Server-side semantics are full replacement: the event
+            // carries the entire current list, not a delta.
+            todosBySession[sessionID] = todos
         }
     }
 
@@ -342,6 +369,7 @@ final class SessionStore {
         sessions.removeAll { $0.id == sessionID }
         messagesBySession[sessionID] = nil
         permissionsBySession[sessionID] = nil
+        todosBySession[sessionID] = nil
         statuses[sessionID] = nil
     }
 
