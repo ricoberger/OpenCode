@@ -491,4 +491,67 @@ struct DecodingTests {
         }
         #expect(type == "quantum.entanglement.updated")
     }
+
+    // MARK: - Todos
+
+    @Test func decodesTodoArray() throws {
+        // Matches the REST shape returned by `GET /session/:id/todo`.
+        let json = """
+        [
+          { "content": "Write the test", "status": "pending", "priority": "high" },
+          { "content": "Implement the view", "status": "in_progress", "priority": "medium" },
+          { "content": "Run the build", "status": "completed", "priority": "low" },
+          { "content": "Abandon the rewrite", "status": "cancelled", "priority": "low" }
+        ]
+        """
+        let todos = try decode([TodoItem].self, json)
+        #expect(todos.count == 4)
+        #expect(todos[0].content == "Write the test")
+        #expect(todos[0].status == .pending)
+        #expect(todos[0].priority == "high")
+        #expect(todos[1].status == .inProgress)
+        #expect(todos[2].status == .completed)
+        #expect(todos[3].status == .cancelled)
+    }
+
+    @Test func decodesTodoUpdatedEvent() throws {
+        let json = """
+        {
+          "type": "todo.updated",
+          "properties": {
+            "sessionID": "ses_1",
+            "todos": [
+              { "content": "Draft the plan", "status": "in_progress", "priority": "medium" }
+            ]
+          }
+        }
+        """
+        let event = try decode(ServerEvent.self, json)
+        guard case .todoUpdated(let sessionID, let todos) = event else {
+            Issue.record("expected todoUpdated")
+            return
+        }
+        #expect(sessionID == "ses_1")
+        #expect(todos.count == 1)
+        #expect(todos[0].content == "Draft the plan")
+        #expect(todos[0].status == .inProgress)
+    }
+
+    @Test func decodesUnknownTodoStatusAndMissingFields() throws {
+        // A future status the app does not know about, and a payload
+        // missing the spec-required `priority` field. Both must degrade
+        // gracefully (no throw) per the lenient-decoding contract.
+        let json = """
+        [
+          { "content": "Blocked on review", "status": "blocked", "priority": "medium" },
+          { "content": "Loose item" }
+        ]
+        """
+        let todos = try decode([TodoItem].self, json)
+        #expect(todos.count == 2)
+        #expect(todos[0].status == .unknown)
+        #expect(todos[1].status == .unknown)
+        #expect(todos[1].content == "Loose item")
+        #expect(todos[1].priority == "")
+    }
 }
