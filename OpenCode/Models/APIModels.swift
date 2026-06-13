@@ -880,25 +880,64 @@ struct ModelRef: Codable, Hashable {
     var modelID: String
 }
 
-/// Body of `POST /session/:id/prompt_async`. v1 only sends a single text
-/// part; the `parts` array mirrors the server's richer input schema so
-/// attachments can be added later without reshaping the request.
+/// Body of `POST /session/:id/prompt_async`. The server's `parts` array
+/// is heterogeneous (text + file + agent + subtask inputs); v1 sends text
+/// and file parts. Each `PartInput` case encodes to its own object shape
+/// with a `type` discriminator, so the receiver decodes the right schema.
+///
+/// File parts inline their bytes as a `data:<mime>;base64,...` URL —
+/// opencode exposes no separate upload endpoint, so the bytes have to
+/// travel inside the prompt request body itself.
 struct PromptRequest: Encodable {
-    struct TextPartInput: Encodable {
-        var type = "text"
-        var text: String
+    /// Heterogeneous part input. Each case encodes to a distinct JSON
+    /// object shape; the `type` field is the discriminator the server
+    /// uses to pick the matching schema.
+    enum PartInput: Encodable {
+        case text(String)
+        /// `mime`, `url` (a `data:` URL), and optional `filename` matching
+        /// the server's `FilePartInput`. `url` carries the actual bytes.
+        case file(mime: String, url: String, filename: String?)
+
+        // Hand-rolled encoding because each case needs a different shape.
+        private enum CodingKeys: String, CodingKey {
+            case type, text, mime, url, filename
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            switch self {
+            case .text(let text):
+                try container.encode("text", forKey: .type)
+                try container.encode(text, forKey: .text)
+            case .file(let mime, let url, let filename):
+                try container.encode("file", forKey: .type)
+                try container.encode(mime, forKey: .mime)
+                try container.encode(url, forKey: .url)
+                // Omit when nil so the request body matches the spec
+                // (filename is optional, not required-or-null).
+                try container.encodeIfPresent(filename, forKey: .filename)
+            }
+        }
     }
 
     /// `nil` lets the server fall back to its configured default model.
     var model: ModelRef?
     /// `nil` lets the server fall back to its default agent.
     var agent: String?
-    var parts: [TextPartInput]
+    var parts: [PartInput]
 
-    init(text: String, model: ModelRef?, agent: String?) {
+    /// Convenience for the common case: a text prompt with zero or more
+    /// inline file attachments. Empty `text` is dropped so an
+    /// attachments-only message doesn't carry a stray empty text part.
+    init(text: String, attachments: [PartInput] = [], model: ModelRef?, agent: String?) {
         self.model = model
         self.agent = agent
-        self.parts = [TextPartInput(text: text)]
+        var parts: [PartInput] = []
+        if !text.isEmpty {
+            parts.append(.text(text))
+        }
+        parts.append(contentsOf: attachments)
+        self.parts = parts
     }
 }
 

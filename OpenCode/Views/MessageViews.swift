@@ -40,22 +40,40 @@ struct MessageView: View {
 // MARK: - User
 
 /// A user prompt: right-aligned tinted bubble, plain text (user input is
-/// not markdown-rendered — what was typed is what shows).
+/// not markdown-rendered — what was typed is what shows), plus any file
+/// parts the user attached. The bubble is suppressed when the message
+/// has no text (attachments-only sends still render their chips).
 private struct UserMessageView: View {
     let message: MessageWithParts
 
     var body: some View {
         let text = userText
-        if !text.isEmpty {
-            HStack {
-                // Keeps the bubble from spanning the full width, chat-style.
-                Spacer(minLength: 48)
-                Text(text)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 16))
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .textSelection(.enabled)
+        let files = userFileParts
+        VStack(alignment: .trailing, spacing: 6) {
+            if !text.isEmpty {
+                HStack {
+                    // Keeps the bubble from spanning the full width, chat-style.
+                    Spacer(minLength: 48)
+                    Text(text)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 16))
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .textSelection(.enabled)
+                }
+            }
+            if !files.isEmpty {
+                // Right-aligned column of attachment previews. Images show
+                // an inline thumbnail (decoded from the part's data URL),
+                // documents show a paperclip+filename capsule — mirroring
+                // the composer chip styles so what you sent looks like
+                // what's now in the transcript.
+                VStack(alignment: .trailing, spacing: 6) {
+                    ForEach(files) { part in
+                        UserAttachmentView(file: part)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
@@ -70,6 +88,66 @@ private struct UserMessageView: View {
             return nil
         }
         .joined(separator: "\n\n")
+    }
+
+    /// File parts attached to the user's prompt. Preserves message order
+    /// so attachments display in the order the user picked them.
+    private var userFileParts: [UserFilePart] {
+        message.parts.compactMap { part in
+            if case .file(let data) = part.content {
+                return UserFilePart(id: part.id, data: data)
+            }
+            return nil
+        }
+    }
+}
+
+/// Identifiable wrapper so ForEach can key on the part id — `FilePartData`
+/// alone has no stable identity (multiple identical attachments are
+/// legal).
+private struct UserFilePart: Identifiable {
+    let id: String
+    let data: FilePartData
+}
+
+/// One attachment as it appears in the user's transcript bubble.
+/// Images decode their bytes inline from the part's `data:` URL (the
+/// only form the composer ever sends — see ComposerView). Anything else
+/// falls back to the paperclip chip used elsewhere for file parts.
+private struct UserAttachmentView: View {
+    let file: UserFilePart
+
+    private let maxImageDimension: CGFloat = 200
+
+    var body: some View {
+        if let mime = file.data.mime, mime.hasPrefix("image/"),
+           let url = file.data.url,
+           let image = decodedImage(from: url)
+        {
+            image
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: maxImageDimension, maxHeight: maxImageDimension)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+        } else {
+            Label(file.data.filename ?? file.data.mime ?? "Attachment", systemImage: "paperclip")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.fill.tertiary, in: Capsule())
+        }
+    }
+
+    /// Decodes the inline `data:` URL into a SwiftUI `Image`. Returns
+    /// `nil` for hosted URLs (we don't fetch network attachments — the
+    /// server doesn't emit any today, but if a future part type does,
+    /// it'll fall through to the paperclip chip rather than crash).
+    private func decodedImage(from url: String) -> Image? {
+        guard let data = decodeDataURL(url),
+              let uiImage = UIImage(data: data)
+        else { return nil }
+        return Image(uiImage: uiImage)
     }
 }
 

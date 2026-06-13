@@ -242,18 +242,32 @@ final class SessionStore {
         }
     }
 
-    /// Sends a prompt. Throws so the composer can keep the draft on failure
-    /// (the draft is only cleared after the server accepted the prompt).
-    /// No optimistic message insert: the `message.updated` event arrives
+    /// Sends a prompt with zero or more inline file attachments. Throws so
+    /// the composer can keep the draft (and attachments) on failure — they
+    /// are only cleared after the server accepted the prompt. No
+    /// optimistic message insert: the `message.updated` event arrives
     /// within milliseconds on a healthy connection.
-    func send(text: String, sessionID: String) async throws {
+    ///
+    /// `attachments` are already encoded (resized, base64'd, wrapped in a
+    /// `data:` URL) by the composer; the store stays oblivious to image
+    /// formats and just hands the parts through.
+    func send(
+        text: String,
+        attachments: [PromptRequest.PartInput] = [],
+        sessionID: String
+    ) async throws {
         guard let client = connection.client else {
             throw APIError.http(status: 0, message: "Not connected")
         }
         do {
             try await client.prompt(
                 sessionID: sessionID,
-                request: PromptRequest(text: text, model: selectedModel, agent: selectedAgent)
+                request: PromptRequest(
+                    text: text,
+                    attachments: attachments,
+                    model: selectedModel,
+                    agent: selectedAgent
+                )
             )
         } catch {
             report(error)
