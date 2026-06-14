@@ -1,8 +1,9 @@
 # OpenCode iOS Client
 
 iOS client for [opencode](https://opencode.ai): connect to an `opencode serve`
-instance, view/create sessions, send prompts, watch the agent work live, and
-answer permission requests.
+instance, view/create/rename sessions, send prompts (with image and document
+attachments, project-file references, and skill hints), watch the agent work
+live, and answer permission requests.
 
 ## Build & Test
 
@@ -26,7 +27,7 @@ MV (no ViewModels), everything MainActor by default
 (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`):
 
 - `Models/APIModels.swift` — hand-written Codable models for the server API.
-- `Networking/` — `APIClient` (stateless struct, ~10 REST endpoints),
+- `Networking/` — `APIClient` (stateless struct, ~15 REST endpoints),
   `SSE.swift` (parser + `/event` stream), `Keychain`, `ServerConfig`.
 - `Stores/ServerConnection.swift` — config + connection state machine + SSE
   event loop with exponential-backoff reconnect.
@@ -65,6 +66,16 @@ Data flow rules:
 - **Native-first dependency policy.** Exactly one dependency
   (`swift-markdown-ui`, needed for fenced code blocks). SSE parsing and Keychain
   stay hand-rolled. Do not add packages without strong need.
+- **Attachments are inline `data:` URLs.** The server has no upload endpoint;
+  `FilePartInput.url` carries `data:<mime>;base64,...` and the bytes travel with
+  the prompt body. Images are resized + JPEG-recompressed before encoding (see
+  `Utilities/AttachmentEncoding.swift`) — never send full-res photos.
+- **Project-file references are plain text, not a part type.**
+  `@<relative-path>` in the prompt text is recognised by the agent and resolved
+  via its Read tool; there is no `PromptReferenceAttachment` or
+  `FilePartInput.source` wire shape to populate. The picker just appends
+  `@<path> ` to the draft (see `FileReference.append`). Same pattern for
+  `/skill-name` slash hints.
 - Timestamps from the server are epoch **milliseconds**.
 
 ## SwiftUI landmines (do not "simplify" these away)
@@ -81,6 +92,11 @@ Data flow rules:
 - **Hardware Return doesn't insert newlines** in a vertical-axis `TextField` —
   the composer intercepts `.onKeyPress(.return)` and re-asserts focus afterwards
   (the text system tries to end editing).
+- **`PhotosPicker` as an inline view inside a `Menu` doesn't present.** Menu
+  intercepts the tap and dismisses; the picker never gets told to open. Use the
+  imperative `.photosPicker(isPresented:selection:matching:photoLibrary:)`
+  modifier paired with a plain `Button` in the menu that flips the flag (see
+  `ComposerView`). Same pitfall applies to other native pickers in Menu items.
 
 ## Conventions
 
@@ -95,6 +111,6 @@ Data flow rules:
 
 ## Out of scope for v1 (intentional)
 
-File browser, diffs, share links, fork/revert, shell/slash commands, sending
-attachments, multiple servers, offline cache, push notifications (top v2
-candidate: notify on pending permissions).
+File browser, diffs, share links, fork/revert, shell/slash commands, multiple
+servers, offline cache, push notifications (top v2 candidate: notify on pending
+permissions).

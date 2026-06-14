@@ -16,15 +16,20 @@ work in real time, and answer permission requests from your phone.
 
 ## Features
 
-- **Sessions** — browse, create, and delete the sessions on your server; live
-  status shows which session the agent is currently working in.
+- **Sessions** — browse, create, rename, and delete the sessions on your server;
+  live status shows which session the agent is currently working in.
 - **Chat** — full conversation history with streaming responses: markdown with
   fenced code blocks, collapsed reasoning ("thinking") sections, and compact,
   expandable tool-call cards with live status.
+- **Todos** — view the agent's current plan for the open session in a bottom
+  sheet, updated live as it works through the list.
 - **Permissions** — when the agent asks for approval (run a command, edit a
   file, leave the project directory), the request appears as an inline card with
   _Allow Once / Always Allow / Deny_ — so the agent never sits blocked while you
   are away from your desk.
+- **Composer** — attach images and documents from your phone (Photos library and
+  the Files app), reference project files on the server with `@<path>`
+  (TUI-style search), and invoke a skill with `/<name>` from a built-in picker.
 - **Model & agent selection** — pick the model and agent for new prompts from
   the chat settings menu; defaults come from your server.
 - **Live & resilient** — a single server-sent-events stream drives the whole UI;
