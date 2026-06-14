@@ -16,10 +16,11 @@
 //    upload endpoint). Images go through AttachmentEncoder — see
 //    `Utilities/AttachmentEncoding.swift` for the resize policy.
 //  - The "add" Menu (the `plus` icon left of the TextField) bundles
-//    Photo Library, Files, and Skill. The first two queue an
-//    attachment chip; the third injects a `/<skill-name> ` prefix into
-//    the draft via SkillPrefix.apply — same Menu, two different
-//    mechanical outcomes, intentional consolidation.
+//    Photo Library, Files, Skill, and Project File. The first two
+//    queue an attachment chip; the latter two inject text into the
+//    draft (`/<skill-name> ` prefix, `@<path> ` reference) — same
+//    Menu, two different mechanical outcomes, intentional
+//    consolidation.
 //  - The chip strip is only rendered when at least one attachment is
 //    queued; the input row otherwise stays compact.
 //  - Send is disabled while any attachment is still loading and while any
@@ -62,6 +63,8 @@ struct ComposerView: View {
     @State private var showingFileImporter = false
     /// Drives the skills picker sheet.
     @State private var showingSkillPicker = false
+    /// Drives the project-file picker sheet (TUI `@` parity).
+    @State private var showingProjectFilePicker = false
 
     private var isWorking: Bool {
         store.status(for: session.id).isWorking
@@ -204,6 +207,16 @@ struct ComposerView: View {
                 isFocused = true
             }
         }
+        // Project-file picker — search-only sheet over `/find/file`.
+        // Tap a result → `@<path> ` is appended to the draft via
+        // FileReference.append; the agent recognises the reference and
+        // resolves it via Read on the next turn.
+        .sheet(isPresented: $showingProjectFilePicker) {
+            ProjectFilePicker { path in
+                draft = FileReference.append(path: path, to: draft)
+                isFocused = true
+            }
+        }
     }
 
     // MARK: - Attach menu
@@ -238,6 +251,14 @@ struct ComposerView: View {
                 showingSkillPicker = true
             } label: {
                 Label("Skill", systemImage: "wand.and.stars")
+            }
+
+            Button {
+                showingProjectFilePicker = true
+            } label: {
+                // The literal `@` SF Symbol — broadcasts parity with
+                // the TUI's `@` file-reference feature.
+                Label("Project File", systemImage: "at")
             }
         } label: {
             // `plus.circle.fill` (not bare `plus`) so the icon's filled

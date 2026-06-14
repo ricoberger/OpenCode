@@ -155,6 +155,22 @@ struct APIClient {
         try await get("/skill")
     }
 
+    /// `GET /find/file?query=...&limit=50&type=file` — substring search
+    /// across project files for the `@` reference picker. Returns paths
+    /// relative to the project root, honoring `.gitignore`. Limit caps
+    /// the result list at a phone-screen-sensible size; the server's own
+    /// hard ceiling is 200.
+    ///
+    /// Files-only (`type=file`): referencing a directory with `@dir` is
+    /// rarely useful — the agent's tools all operate on file paths.
+    func findFiles(query: String) async throws -> [String] {
+        try await get("/find/file", queryItems: [
+            URLQueryItem(name: "query", value: query),
+            URLQueryItem(name: "limit", value: "50"),
+            URLQueryItem(name: "type", value: "file"),
+        ])
+    }
+
     /// `GET /session/:id/todo` — the agent's current todo list for one
     /// session. Returns the full canonical list (replacement semantics);
     /// also pushed live via `todo.updated` SSE events.
@@ -176,11 +192,27 @@ struct APIClient {
     /// Builds a request with shared headers. The `some Encodable` body is
     /// generic so call sites stay type-safe; the default `nil as String?`
     /// satisfies the generic parameter for body-less requests.
-    private func request(path: String, method: String, body: (some Encodable)? = nil as String?)
-        -> URLRequest
-    {
+    ///
+    /// `queryItems` are appended through `URLComponents` so values get
+    /// percent-encoded correctly. `URL.append(path:)` alone treats `?` as
+    /// part of the path and double-encodes it, which is why the helper
+    /// owns this separately.
+    private func request(
+        path: String,
+        method: String,
+        queryItems: [URLQueryItem]? = nil,
+        body: (some Encodable)? = nil as String?
+    ) -> URLRequest {
         var url = baseURL
         url.append(path: path)
+
+        if let queryItems, !queryItems.isEmpty,
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.queryItems = queryItems
+            if let resolved = components.url {
+                url = resolved
+            }
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -198,8 +230,8 @@ struct APIClient {
     /// GET + decode helper. Decoding failures are wrapped in
     /// `APIError.decoding` so the UI shows a friendly message instead of a
     /// raw `DecodingError`.
-    private func get<T: Decodable>(_ path: String) async throws -> T {
-        let data = try await send(request(path: path, method: "GET"))
+    private func get<T: Decodable>(_ path: String, queryItems: [URLQueryItem]? = nil) async throws -> T {
+        let data = try await send(request(path: path, method: "GET", queryItems: queryItems))
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
